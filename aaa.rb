@@ -116,7 +116,7 @@ module Aaa
         :+ => proc {|x,y,ctx| x.eval(ctx) + y.eval(ctx)},
         :- => proc {|x,y,ctx| x.eval(ctx) - y.eval(ctx)},
         :* => proc {|x,y,ctx| x.eval(ctx) * y.eval(ctx)},
-        :^ => proc {|x,y,ctx| x.eval(ctx) ^ y.eval(ctx)},
+        :^ => proc {|x,y,ctx| x.eval(ctx).pow y.eval(ctx)},
       }
 
     def initialize(l, r, op)
