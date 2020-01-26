@@ -1,16 +1,31 @@
+#!/usr/bin/ruby
+#
 $:.unshift File.dirname(__FILE__) + "/../lib"
 
 require 'pp'
 require 'parslet'
 require 'parslet/convenience'
+require 'open3'
 
 DEBUG = false
+COMPILE = ARGV.include? '-compile' 
 
+if COMPILE then
+  ARGV.pop
+end
 
 module Aaa
   class OhNoesEverythingIsFucked
     def self.method_missing(meth)
       raise "You done fucked, `#{meth}' doesn't exist"
+    end
+  end
+
+  class Fresh
+    @@value = 0
+    def self.fresh
+      @@value += 1
+      "fresh_g#{@@value}"
     end
   end
 
@@ -45,6 +60,7 @@ module Aaa
     def is_expr() true end
     def value() nil end
     def eval(ctx) nil end
+    def compile(ctx) "'()" end
   end
 
   class StmtAST
@@ -56,6 +72,9 @@ module Aaa
         insn.eval(ctx)
       end
       nil
+    end
+    def compile(ctx)
+      "(begin #{@insns.map {|x| x.compile(ctx)}.join(' ')})"
     end
     def initialize(insns)
       @insns = insns
@@ -81,6 +100,14 @@ module Aaa
       end
       nil
     end
+
+    def compile(ctx)
+      new_ctx = ctx.close
+      var = Fresh.fresh
+      new_ctx[@name] = var
+      from = @from.compile(ctx)
+      "(for-each (lambda (#{var}) #{@insns.compile(new_ctx)}) (map (lambda (x) (+ #{from} x)) (iota (- #{@to.compile(ctx)} #{from}))))"
+    end
   end
 
   class IfAST < StmtAST
@@ -98,6 +125,10 @@ module Aaa
       end
       nil
     end
+
+    def compile(ctx)
+      "(if #{@cond.compile(ctx)} #{@insns.compile(ctx)} '())"
+    end
   end
 
   class IntLit < ExprAST
@@ -107,6 +138,9 @@ module Aaa
     end
     def eval(ctx)
       @value
+    end
+    def compile(ctx)
+      @value.inspect
     end
   end
 
@@ -123,9 +157,13 @@ module Aaa
       @left = l
       @right = r
       @operation = @@operations[op]
+      @op = op
     end
     def eval(ctx)
       @operation.call(@left, @right, ctx)
+    end
+    def compile(ctx)
+      "(#{@op} #{@left.compile(ctx)} #{@right.compile(ctx)})"
     end
   end
 
@@ -139,14 +177,26 @@ module Aaa
         :'<'  => proc {|x,y,ctx| x.eval(ctx) < y.eval(ctx)},
         :'>'  => proc {|x,y,ctx| x.eval(ctx) > y.eval(ctx)},
       }
+    @@coperations = {
+        :'==' => '=',
+        :'<>' => '(lambda (x y) (not (= x y)))',
+        :'<=' => '<=',
+        :'>=' => '>=',
+        :'<'  => '<',
+        :'>'  => '>',
+      }
 
     def initialize(l, r, op)
       @left = l
       @right = r
       @operation = @@operations[op]
+      @op = op
     end
     def eval(ctx)
       @operation.call(@left, @right, ctx)
+    end
+    def compile(ctx)
+      "(#{@@coperations[@op]} #{@left.compile(ctx)} #{@right.compile(ctx)})"
     end
   end
 
@@ -159,10 +209,20 @@ module Aaa
       @expr = expr
     end
     def eval(ctx)
-      if value then
+      if @value then
         c = ctx.close
         c[@name] = @value.eval(ctx)
         @expr.eval(c)
+      else
+        ctx[@name]
+      end
+    end
+    def compile(ctx)
+      if @value then
+        c = ctx.close
+        var = Fresh.fresh
+        c[@name] = var
+        "(let ([#{var} #{@value.compile(ctx)}]) #{@expr.compile(c)})"
       else
         ctx[@name]
       end
@@ -187,6 +247,17 @@ module Aaa
         print @expr.eval(ctx).chr
       end
       nil
+    end
+
+    def compile(ctx)
+      case kind
+      when :print
+        "(printf \"~s\\n\" #{@expr.eval(ctx)})"
+      when :pprint
+        "(pretty-print '#{@expr.eval(ctx)})"
+      when :cprint
+        "(display (integer->char #{@expr.eval(ctx)}))"
+      end
     end
   end
 
@@ -253,7 +324,7 @@ module Aaa
     }
 
     rule(:boolop) {
-      space? >> (str("==") | str("<>") | str("<") | str(">") | str(">=") | str("<=")).as(:boolop) >> space?
+      space? >> (str("==") | str("<>") | str(">=") | str("<=") | str("<") | str(">")).as(:boolop) >> space?
     }
 
     rule(:identifier) {
@@ -319,7 +390,7 @@ module Aaa
   end
 
   def self.repl()
-    puts "Badly Designed Language Aaa -- Where mathematics has no place\na-b-c == a-(b-c)"
+    STDERR.puts "Badly Designed Language Aaa -- Where mathematics has no place\na-b-c == a-(b-c)"
     parser = Parser.new
     transformer = Transform.new
     context = Context.new(nil)
@@ -327,7 +398,7 @@ module Aaa
     tline = ""
     in_count = 0
     loop do
-      print ">>> " + (' ' * in_count)
+      STDERR.print ">>> " + (' ' * in_count)
       line = gets.chomp
       return if line.empty?
 
@@ -343,12 +414,23 @@ module Aaa
       res = transformer.do result
       pp res if DEBUG
       begin
-        res = res.eval(context)
+        res = if COMPILE then
+                res.compile(context)
+              else 
+                res.eval(context)
+              end
       rescue => e
-        print "Error: " + e.message + "\n"
+        STDERR.print "Error: " + e.message + "\n"
         res = nil
       end
-      pp res if res
+      if res then
+        if COMPILE then
+          o, s = Open3.capture2("scheme -q", :stdin_data => res)
+          print o
+        else 
+          pp res
+        end
+      end
 
       tline = ""
     end
